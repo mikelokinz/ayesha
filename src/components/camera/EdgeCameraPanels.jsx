@@ -504,30 +504,31 @@ export function EdgeCameraPanels() {
     let timer;
 
       async function poll() {
-        let data;
+      let data;
+
+      try {
+        data = await readJson(`${EDGE_URL}/api/status`);
+      } catch (error) {
+        if (!cancelled) {
+          setConnected(false);
+          timer = setTimeout(poll, 4000);
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setStatus(data);
+        setConnected(true);
 
         try {
-          data = await readJson(`${EDGE_URL}/api/status`);
+          collectEvents(data);
         } catch (error) {
-          if (!cancelled) {
-            setConnected(false);
-            timer = setTimeout(poll, 5000);
-          }
-          return;
+          console.error('Live event collection failed:', error);
         }
 
-        if (!cancelled) {
-          setStatus(data);
-          setConnected(true);
-
-          try {
-            collectEvents(data);
-          } catch (error) {
-            // Silently ignore collection failures
-          }
-          timer = setTimeout(poll, 3000);
-        }
+        timer = setTimeout(poll, 3000);
       }
+    }
 
     poll();
 

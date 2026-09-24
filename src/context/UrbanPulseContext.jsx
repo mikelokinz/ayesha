@@ -264,9 +264,11 @@ export function UrbanPulseProvider({ children }) {
           );
         }
       } catch {
-        /* edge offline — leave edgeGps unset for all */
+        /* edge offline — back off gracefully */
+        if (!cancelled) timer = setTimeout(pollGPS, 6000);
+        return;
       }
-      if (!cancelled) timer = setTimeout(pollGPS, 5000);
+      if (!cancelled) timer = setTimeout(pollGPS, 4000);
     }
     pollGPS();
     return () => {
