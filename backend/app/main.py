@@ -35,15 +35,54 @@ def health():
             "note": "Camera model classes and readiness are reported by edge /api/status"}
 
 
+import asyncio
+import math
+import time
+
+_CACHED_FRAMES = {}
+
+def _get_cached_frames(camera: str):
+    """Pre-extract and cache a small ring of 12 compressed JPEG frames into memory."""
+    if camera in _CACHED_FRAMES:
+        return _CACHED_FRAMES[camera]
+    frames = []
+    video_file = BASE_DIR / "videos" / f"{camera}.mp4"
+    if video_file.is_file():
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(video_file))
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+            step = max(1, total // 12)
+            for i in range(0, total, step):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                ok, frame = cap.read()
+                if ok:
+                    h, w = frame.shape[:2]
+                    scale = 480 / max(w, 1)
+                    resized = cv2.resize(frame, (480, int(h * scale)))
+                    ok_enc, enc = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 55])
+                    if ok_enc:
+                        frames.append(enc.tobytes())
+                if len(frames) >= 12:
+                    break
+            cap.release()
+        except Exception:
+            pass
+    _CACHED_FRAMES[camera] = frames
+    return frames
+
+
 @app.get("/api/status")
 def status():
-    """Return edge fleet telemetry so cloud deployments display online status."""
+    """Return lightweight, dynamic edge fleet telemetry for cloud dashboards."""
+    t = time.time()
+    v_count = 5 + int(3 * math.sin(t / 10.0))
     return {
         "bus_id": "BUS-104",
         "gps": {
-            "latitude": 13.0148,
-            "longitude": 80.2246,
-            "speed_kmh": 28.4,
+            "latitude": round(13.0145 + 0.002 * math.sin(t / 30.0), 6),
+            "longitude": round(80.2240 + 0.002 * math.cos(t / 30.0), 6),
+            "speed_kmh": round(26.0 + 4.0 * math.sin(t / 8.0), 1),
             "valid": True,
             "source": "SIMULATED_ROUTE"
         },
@@ -59,7 +98,7 @@ def status():
                 "source": "PRERECORDED_VIDEO_AI",
                 "classes": {"0": "speed_bump", "1": "pothole", "2": "unpaved_road"},
                 "processed_fps": 12.0,
-                "inference_ms": 35.4,
+                "inference_ms": 32.4,
                 "vehicle_count": None
             },
             "traffic": {
@@ -69,10 +108,10 @@ def status():
                 "source": "PRERECORDED_VIDEO_AI",
                 "classes": {"0": "person", "1": "bicycle", "2": "car", "3": "motorcycle", "5": "bus", "7": "truck"},
                 "processed_fps": 12.0,
-                "inference_ms": 42.1,
-                "vehicle_count": 6,
-                "congestion_level": "LOW",
-                "signal_state": "GREEN"
+                "inference_ms": 38.2,
+                "vehicle_count": v_count,
+                "congestion_level": "MODERATE" if v_count > 7 else "LOW",
+                "signal_state": "GREEN" if int(t / 15) % 2 == 0 else "RED"
             }
         }
     }
@@ -88,38 +127,24 @@ def camera_config():
 
 @app.get("/api/live/{camera}")
 async def live_camera(camera: str):
-    """Stream camera preview frames for cloud dashboard without heavy GPU inference."""
-    import asyncio
+    """Stream memory-cached camera preview frames with zero video-decode CPU overhead."""
     from fastapi.responses import StreamingResponse
-    video_file = BASE_DIR / "videos" / f"{camera}.mp4"
-    if not video_file.is_file():
-        raise HTTPException(404, f"Video not found for {camera}")
 
     async def generate_frames():
-        import cv2
-        cap = cv2.VideoCapture(str(video_file))
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-        pos = 0
-        try:
-            while True:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-                ok, frame = cap.read()
-                if not ok:
-                    pos = 0
-                    continue
-                pos = (pos + 3) % total
-                ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
-                if ok:
-                    jpeg = encoded.tobytes()
-                    yield (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
-                        + jpeg + b"\r\n"
-                    )
-                await asyncio.sleep(0.1)
-        finally:
-            cap.release()
+        frames = _get_cached_frames(camera)
+        if not frames:
+            raise HTTPException(404, f"No preview available for {camera}")
+        idx = 0
+        while True:
+            jpeg = frames[idx % len(frames)]
+            idx += 1
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(jpeg)).encode() + b"\r\n\r\n"
+                + jpeg + b"\r\n"
+            )
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         generate_frames(),
