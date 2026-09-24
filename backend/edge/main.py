@@ -4,6 +4,7 @@ of the affected camera worker so new videos take effect immediately.
 """
 import asyncio
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,16 +42,24 @@ def _ensure_backup(camera: str):
         shutil.copy2(src, bak)
 
 
-def _restart_worker(camera: str):
-    """Stop and restart the camera worker so a newly uploaded video loads."""
+def _stop_worker(camera: str):
+    """Stop the camera worker so its open video file handles are released."""
+    global runtime
+    if runtime is None:
+        return
+    old = runtime.workers.get(camera)
+    if old is not None:
+        old.stop.set()
+        old.thread.join(timeout=6)
+        time.sleep(0.3)
+
+
+def _start_worker(camera: str):
+    """Start a new camera worker."""
     global runtime
     if runtime is None:
         return False, "runtime not initialized"
     try:
-        old = runtime.workers.get(camera)
-        if old is not None:
-            old.stop.set()
-            old.thread.join(timeout=6)
         new_worker = CameraWorker(camera, runtime.config, runtime.outbox,
                                   runtime.started, runtime.gps)
         new_worker.thread.start()
@@ -58,6 +67,35 @@ def _restart_worker(camera: str):
         return True, None
     except Exception as exc:
         return False, str(exc)
+
+
+def _restart_worker(camera: str):
+    """Stop and restart the camera worker."""
+    _stop_worker(camera)
+    return _start_worker(camera)
+
+
+def _safe_replace(src_path: Path, dst_path: Path, retries: int = 6, delay: float = 0.3):
+    """Safely replace or copy a file on Windows by retrying if file locks are being released."""
+    for attempt in range(retries):
+        try:
+            if dst_path.exists():
+                try:
+                    dst_path.unlink()
+                except (PermissionError, OSError):
+                    pass
+            src_path.replace(dst_path)
+            return
+        except (PermissionError, OSError) as exc:
+            if attempt == retries - 1:
+                try:
+                    shutil.copy2(src_path, dst_path)
+                    src_path.unlink(missing_ok=True)
+                    return
+                except Exception:
+                    raise exc
+            time.sleep(delay)
+
 
 
 @asynccontextmanager
@@ -159,13 +197,17 @@ async def upload_video(
     if len(data) < 1024:
         return {"ok": False, "error": "File too small to be a valid video"}
 
+    # Stop worker before modifying file to release Windows file handles
+    _stop_worker(camera)
+
     tmp = target.with_suffix(".uploading")
     try:
         tmp.write_bytes(data)
-        tmp.replace(target)
+        _safe_replace(tmp, target)
     except Exception as exc:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
+        _start_worker(camera)
         return {"ok": False, "error": f"Failed to save video: {exc}"}
 
     frames, fps = None, None
@@ -179,7 +221,7 @@ async def upload_video(
     except Exception:
         pass
 
-    restarted, restart_err = _restart_worker(camera)
+    restarted, restart_err = _start_worker(camera)
 
     return {
         "ok": True,
@@ -200,8 +242,9 @@ def reset_video(camera: str = Query(..., pattern="^(road|traffic)$")):
     bak = _backup_paths[camera]
     if not bak.exists():
         raise HTTPException(404, f"No backup exists for {camera}; nothing to reset to.")
-    shutil.copy2(bak, _video_paths[camera])
-    restarted, restart_err = _restart_worker(camera)
+    _stop_worker(camera)
+    _safe_replace(bak, _video_paths[camera]) if False else shutil.copy2(bak, _video_paths[camera])
+    restarted, restart_err = _start_worker(camera)
     return {
         "ok": True,
         "reset": True,
@@ -211,3 +254,4 @@ def reset_video(camera: str = Query(..., pattern="^(road|traffic)$")):
         "worker_restarted": restarted,
         "worker_restart_error": restart_err,
     }
+
