@@ -266,7 +266,7 @@ export function UrbanPulseProvider({ children }) {
       } catch {
         /* edge offline — leave edgeGps unset for all */
       }
-      if (!cancelled) timer = setTimeout(pollGPS, 2000);
+      if (!cancelled) timer = setTimeout(pollGPS, 5000);
     }
     pollGPS();
     return () => {

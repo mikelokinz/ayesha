@@ -504,39 +504,30 @@ export function EdgeCameraPanels() {
     let timer;
 
       async function poll() {
-      let data;
-
-      try {
-        data = await readJson(`${EDGE_URL}/api/status`);
-      } catch (error) {
-        console.error('Edge status fetch failed:', error);
-
-        if (!cancelled) {
-          setConnected(false);
-        }
-
-        if (!cancelled) {
-          timer = setTimeout(poll, 1000);
-        }
-
-        return;
-      }
-
-      if (!cancelled) {
-        setStatus(data);
-        setConnected(true);
+        let data;
 
         try {
-          collectEvents(data);
+          data = await readJson(`${EDGE_URL}/api/status`);
         } catch (error) {
-          console.error('Live event collection failed:', error);
+          if (!cancelled) {
+            setConnected(false);
+            timer = setTimeout(poll, 5000);
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setStatus(data);
+          setConnected(true);
+
+          try {
+            collectEvents(data);
+          } catch (error) {
+            // Silently ignore collection failures
+          }
+          timer = setTimeout(poll, 3000);
         }
       }
-
-      if (!cancelled) {
-        timer = setTimeout(poll, 1000);
-      }
-    }
 
     poll();
 
