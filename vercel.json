@@ -1,6 +1,18 @@
 {
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://urban-backend-p6lc.onrender.com/api/$1"
+    },
+    {
+      "source": "/results/(.*)",
+      "destination": "https://urban-backend-p6lc.onrender.com/results/$1"
+    },
+    {
+      "source": "/evidence/(.*)",
+      "destination": "https://urban-backend-p6lc.onrender.com/evidence/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
